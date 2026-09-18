@@ -1,0 +1,118 @@
+import type { AnyTool, Tool } from "./tool";
+import type { ToolExecutionResult } from "./tool-error";
+
+import type {
+  ModelToolDefinition,
+} from "../model/model";
+import z from "zod";
+
+export class ToolRegistry {
+  private tools = new Map<string, AnyTool>();
+
+  register(tool: AnyTool): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`Tool already registered: ${tool.name}`);
+    }
+
+    this.tools.set(tool.name, tool);
+  }
+
+  get(name: string): AnyTool | undefined {
+    return this.tools.get(name);
+  }
+
+  list(): AnyTool[] {
+    return Array.from(this.tools.values());
+  }
+
+  getModelDefinitions(): ModelToolDefinition[] {
+    return this.list().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: z.toJSONSchema(
+        tool.inputSchema,
+      ),
+    }));
+  }
+
+  async execute(toolName: string, args: unknown): Promise<ToolExecutionResult> {
+    const tool = this.get(toolName);
+
+    if (!tool) {
+      return {
+        success: false,
+        error: {
+          code: "UNKNOWN_TOOL",
+          toolName,
+          message: `Unknown tool: ${toolName}`,
+        },
+      };
+    }
+
+    // 1. Validate input schema
+    const inputResult = tool.inputSchema.safeParse(args);
+
+    if (!inputResult.success) {
+      return {
+        success: false,
+        error: {
+          code: "INVALID_INPUT",
+          toolName,
+          message: "Tool input failed validation",
+          details: inputResult.error.issues,
+        },
+      };
+    }
+
+    // 2. Execute tool
+    let rawOutput: unknown;
+
+    try {
+      rawOutput = await tool.execute(inputResult.data);
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: "EXECUTION_FAILED",
+          toolName,
+          message: "Tool execution failed",
+          details: getErrorDetails(error),
+        },
+      };
+    }
+
+    // 3. Validate output schema
+    const outputResult = tool.outputSchema.safeParse(rawOutput);
+
+    if (!outputResult.success) {
+      return {
+        success: false,
+        error: {
+          code: "INVALID_OUTPUT",
+          toolName,
+          message: "Tool output failed validation",
+          details: outputResult.error.issues,
+        },
+      };
+    }
+
+    return {
+      success: true,
+      kind: tool.resultKind,
+      data: outputResult.data,
+    };
+  }
+}
+
+function getErrorDetails(error: unknown): unknown {
+  return {
+    errorType:
+      error instanceof Error
+        ? error.name
+        : "UnknownError",
+    errorMessage:
+      error instanceof Error
+        ? error.message
+        : "Unknown tool execution error",
+  };
+}
