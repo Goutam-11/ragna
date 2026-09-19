@@ -208,11 +208,17 @@ function buildContextMessage(
       objective:
         context.objective,
 
+      collectedContext:
+        context.context,
+
       collectedEvidence:
         context.evidence,
 
       toolErrors:
         context.toolErrors,
+
+      approvals:
+        context.approvals,
     },
     null,
     2,

@@ -1,14 +1,7 @@
-import {
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import { AgentRunner } from "../src/agent/agent-runner";
-import type {
-  ModelAdapter,
-  ModelContext,
-} from "../src/model/model";
+import type { ModelAdapter, ModelContext } from "../src/model/model";
 import type { ModelDecision } from "../src/model/types";
 import { ScriptedModel } from "../src/model/scripted-model";
 import { ToolRegistry } from "../src/tools/registry";
@@ -49,24 +42,15 @@ describe("AgentRunner execution limits", () => {
       },
     ]);
 
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 2,
-        maxToolCalls: 10,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 2, maxToolCalls: 10 },
+    });
 
-    const result = await runner.run(
-      "Investigate payment-api",
-    );
+    const result = await runner.run("Investigate payment-api");
 
     expect(result.status).toBe("stopped");
 
-    expect(result.terminationReason).toBe(
-      "MAX_STEPS_REACHED",
-    );
+    expect(result.terminationReason).toBe("MAX_STEPS_REACHED");
 
     expect(result.state.stepsUsed).toBe(2);
 
@@ -113,24 +97,18 @@ describe("AgentRunner execution limits", () => {
       },
     ]);
 
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
+    const runner = new AgentRunner(model, registry, {
+      limits: {
         maxSteps: 10,
         maxToolCalls: 2,
       },
-    );
+    });
 
-    const result = await runner.run(
-      "Investigate payment-api",
-    );
+    const result = await runner.run("Investigate payment-api");
 
     expect(result.status).toBe("stopped");
 
-    expect(result.terminationReason).toBe(
-      "MAX_TOOL_CALLS_REACHED",
-    );
+    expect(result.terminationReason).toBe("MAX_TOOL_CALLS_REACHED");
 
     expect(result.state.toolCallsUsed).toBe(2);
 
@@ -148,11 +126,9 @@ describe("AgentRunner execution limits", () => {
   });
   test("allows final response on the last available step", async () => {
     const registry = new ToolRegistry();
-  
-    registry.register(
-      new SearchLogsTool(),
-    );
-  
+
+    registry.register(new SearchLogsTool());
+
     const model = new CountingModel([
       {
         type: "tool_call",
@@ -162,45 +138,34 @@ describe("AgentRunner execution limits", () => {
         },
         summary: "Search payment logs.",
       },
-  
+
       {
         type: "final",
         response: {
           evidence: [
             {
               evidenceId: "E1",
-              statement:
-                "Payment logs were collected.",
+              statement: "Payment logs were collected.",
             },
           ],
-          conclusion:
-            "Investigation completed within budget.",
+          conclusion: "Investigation completed within budget.",
           recommendations: [],
         },
       },
     ]);
-  
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 2,
-        maxToolCalls: 5,
-      },
-    );
-  
-    const result = await runner.run(
-      "Investigate payment-api",
-    );
-  
+
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 2, maxToolCalls: 5 },
+    });
+
+    const result = await runner.run("Investigate payment-api");
+
     expect(result.status).toBe("completed");
-  
-    expect(result.terminationReason).toBe(
-      "COMPLETED",
-    );
-  
+
+    expect(result.terminationReason).toBe("COMPLETED");
+
     expect(result.state.stepsUsed).toBe(2);
-  
+
     expect(model.callCount).toBe(2);
   });
 });
@@ -210,21 +175,15 @@ class CountingModel implements ModelAdapter {
 
   private index = 0;
 
-  constructor(
-    private readonly decisions: ModelDecision[],
-  ) {}
+  constructor(private readonly decisions: ModelDecision[]) {}
 
-  async decide(
-    _context: ModelContext,
-  ): Promise<ModelDecision> {
+  async decide(_context: ModelContext): Promise<ModelDecision> {
     this.callCount += 1;
 
     const decision = this.decisions[this.index];
 
     if (!decision) {
-      throw new Error(
-        "CountingModel has no remaining decisions",
-      );
+      throw new Error("CountingModel has no remaining decisions");
     }
 
     this.index += 1;
@@ -236,9 +195,7 @@ class CountingModel implements ModelAdapter {
 class CountingSearchLogsTool extends SearchLogsTool {
   public executionCount = 0;
 
-  override async execute(
-    input: Parameters<SearchLogsTool["execute"]>[0],
-  ) {
+  override async execute(input: Parameters<SearchLogsTool["execute"]>[0]) {
     this.executionCount += 1;
 
     return super.execute(input);

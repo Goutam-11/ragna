@@ -111,14 +111,10 @@ describe("AgentRunner multi-step investigation", () => {
       },
     ]);
 
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 5,
-        maxToolCalls: 5,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 5, maxToolCalls: 5 },
+    });
+
 
     // Act
     const result = await runner.run(
@@ -284,14 +280,10 @@ describe("AgentRunner multi-step investigation", () => {
       },
     ]);
   
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 5,
-        maxToolCalls: 5,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 5, maxToolCalls: 5 },
+    });
+
   
     // Act
     const result = await runner.run(

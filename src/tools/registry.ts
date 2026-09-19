@@ -1,11 +1,36 @@
 import type { AnyTool, Tool } from "./tool";
-import type { ToolExecutionResult } from "./tool-error";
+import type { ToolError, ToolExecutionResult } from "./tool-error";
 
 import type {
   ModelToolDefinition,
 } from "../model/model";
 import z from "zod";
 
+
+export interface PreparedToolCall {
+  tool: AnyTool;
+  toolName: string;
+  arguments: unknown;
+
+  resultKind:
+    | "context"
+    | "evidence";
+
+  approval:
+    | "never"
+    | "required";
+}
+
+export type PrepareToolResult =
+  | {
+      success: true;
+      call: PreparedToolCall;
+    }
+  | {
+      success: false;
+      error: ToolError;
+  };
+    
 export class ToolRegistry {
   private tools = new Map<string, AnyTool>();
 
@@ -34,6 +59,136 @@ export class ToolRegistry {
       ),
     }));
   }
+
+  prepare(
+      toolName: string,
+      args: unknown,
+    ): PrepareToolResult {
+      const tool =
+        this.tools.get(toolName);
+  
+      if (!tool) {
+        return {
+          success: false,
+  
+          error: {
+            code: "UNKNOWN_TOOL",
+            toolName,
+            message:
+              `Unknown tool: ${toolName}`,
+          },
+        };
+      }
+  
+      const inputResult =
+        tool.inputSchema.safeParse(args);
+  
+      if (!inputResult.success) {
+        return {
+          success: false,
+  
+          error: {
+            code: "INVALID_INPUT",
+            toolName,
+            message:
+              "Tool input failed validation",
+  
+            details:
+              inputResult.error.issues,
+          },
+        };
+      }
+  
+      return {
+        success: true,
+  
+        call: {
+          tool,
+          toolName,
+  
+          // Important: use Zod's validated value.
+          arguments:
+            inputResult.data,
+  
+          resultKind:
+            tool.resultKind,
+  
+          approval:
+            tool.approvalPolicy,
+        },
+      };
+    }
+  
+    async executePrepared(
+      call: PreparedToolCall,
+    ): Promise<ToolExecutionResult> {
+      let rawOutput: unknown;
+  
+      try {
+        rawOutput =
+          await call.tool.execute(
+            call.arguments,
+          );
+      } catch (error) {
+        return {
+          success: false,
+  
+          error: {
+            code:
+              "EXECUTION_FAILED",
+  
+            toolName:
+              call.toolName,
+  
+            message:
+              "Tool execution failed",
+  
+            details: {
+              errorType:
+                error instanceof Error
+                  ? error.name
+                  : "UnknownError",
+  
+              errorMessage:
+                error instanceof Error
+                  ? error.message
+                  : "Unknown tool execution error",
+            },
+          },
+        };
+      }
+  
+      const outputResult =
+        call.tool.outputSchema.safeParse(
+          rawOutput,
+        );
+  
+      if (!outputResult.success) {
+        return {
+          success: false,
+  
+          error: {
+            code:
+              "INVALID_OUTPUT",
+  
+            toolName:
+              call.toolName,
+  
+            message:
+              "Tool returned malformed output",
+  
+            details:
+              outputResult.error.issues,
+          },
+        };
+      }
+  
+      return {
+        success: true,
+        kind: call.resultKind,
+        data: outputResult.data,
+      };
+    }
 
   async execute(toolName: string, args: unknown): Promise<ToolExecutionResult> {
     const tool = this.get(toolName);

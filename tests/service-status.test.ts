@@ -108,14 +108,10 @@ describe("get_service_status", () => {
       },
     ]);
   
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 5,
-        maxToolCalls: 5,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 5, maxToolCalls: 5 },
+    });
+
   
     const result = await runner.run(
       "Check whether payment-api is degraded",

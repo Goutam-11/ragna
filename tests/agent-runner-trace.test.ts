@@ -119,7 +119,8 @@ describe("AgentRunner trace", () => {
     expect(toolResult).toMatchObject({
       type: "TOOL_RESULT",
       tool: "search_logs",
-      evidenceId: "E1",
+      resultKind: "evidence",
+      resultId: "E1",
     });
   });
   
@@ -223,14 +224,10 @@ describe("AgentRunner trace", () => {
       },
     ]);
   
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 2,
-        maxToolCalls: 10,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 2, maxToolCalls: 10 },
+    });
+
   
     const result = await runner.run(
       "Investigate payment-api",
@@ -289,14 +286,10 @@ describe("AgentRunner trace", () => {
       },
     ]);
   
-    const runner = new AgentRunner(
-      model,
-      registry,
-      {
-        maxSteps: 10,
-        maxToolCalls: 1,
-      },
-    );
+    const runner = new AgentRunner(model, registry, {
+      limits: { maxSteps: 10, maxToolCalls: 1 },
+    });
+
   
     const result = await runner.run(
       "Investigate payment-api",
