@@ -1,55 +1,248 @@
+import { AgentRunner, type AgentRunResult } from "@/agent/agent-runner";
+
+import { ToolRegistry } from "@/tools/registry";
+import { SearchLogsTool } from "@/tools/search-logs";
 import { GetMetricsTool } from "@/tools/get-metrics";
-import { AgentRunner } from "./src/agent/agent-runner";
-import { ScriptedModel } from "./src/model/scripted-model";
-import { ToolRegistry } from "./src/tools/registry";
-import { SearchLogsTool } from "./src/tools/search-logs";
+import { GetServiceStatusTool } from "@/tools/get-service-status";
 
-const registry = new ToolRegistry();
+import { renderEvent } from "@/cli/trace-renderer";
+// import { OpenRouterModel } from "@/model/openrouter-model";
+import { ListServicesTool } from "@/tools/list-services";
+import { CliApprovalProvider } from "@/approval/cli-provider";
+import type { ModelAdapter } from "@/model/model";
+import { ScriptedModel } from "@/model/scripted-model";
 
-registry.register(
-  new SearchLogsTool(),
-);
+function createRunner(
+  model: ModelAdapter,
+  registry: ToolRegistry,
+  maxSteps: number,
+  maxToolCalls: number,
+): AgentRunner {
+  let traceSequence = 0;
 
-registry.register(
-  new GetMetricsTool(),
-);
-
-const model = new ScriptedModel([
-  {
-    type: "tool_call",
-    tool: "search_logs",
-    arguments: {
-      service: "payment-api",
+  return new AgentRunner(model, registry, {
+    limits: {
+      maxSteps,
+      maxToolCalls,
     },
-    summary: "Search logs.",
-  },
-  {
-    type: "tool_call",
-    tool: "search_logs",
-    arguments: {
-      service: "payment-api",
+
+    approvalProvider: new CliApprovalProvider(),
+
+    approvalTimeoutMs: 30_000,
+
+    onTraceEvent(event) {
+      console.log(renderEvent(event, ++traceSequence));
+
+      console.log();
     },
-    summary: "Search logs again.",
-  },
-  {
-    type: "tool_call",
-    tool: "search_logs",
-    arguments: {
-      service: "payment-api",
+  });
+}
+
+function printRunSummary(result: AgentRunResult): void {
+  console.log("─────────────────────");
+
+  console.log(`Termination: ${result.terminationReason}`);
+
+  console.log(`Steps used: ${result.state.stepsUsed}`);
+
+  console.log(`Tool calls used: ${result.state.toolCallsUsed}`);
+}
+
+async function runSingle(
+  objective: string,
+  model: ModelAdapter,
+  registry: ToolRegistry,
+  maxSteps: number,
+  maxToolCalls: number,
+): Promise<void> {
+  const runner = createRunner(model, registry, maxSteps, maxToolCalls);
+
+  const result = await runner.run(objective);
+
+  printRunSummary(result);
+}
+
+async function runInteractive(
+  model: ModelAdapter,
+  registry: ToolRegistry,
+  maxSteps: number,
+  maxToolCalls: number,
+): Promise<void> {
+  console.log("\nObservable Agent Loop");
+
+  console.log('Enter an investigation objective. Type "exit" to quit.\n');
+
+  while (true) {
+    const input = prompt("> ");
+
+    if (input === null) {
+      break;
+    }
+
+    const objective = input.trim();
+
+    if (!objective) {
+      continue;
+    }
+
+    if (
+      objective.toLowerCase() === "exit" ||
+      objective.toLowerCase() === "quit"
+    ) {
+      break;
+    }
+
+    console.log();
+
+    const runner = createRunner(model, registry, maxSteps, maxToolCalls);
+
+    try {
+      const result = await runner.run(objective);
+
+      printRunSummary(result);
+    } catch (error) {
+      console.error(
+        "\nInvestigation failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    console.log();
+  }
+}
+
+function getNumberFlag(
+  name: string,
+  fallback: number,
+): number {
+  const index = Bun.argv.indexOf(name);
+
+  if (index === -1) {
+    return fallback;
+  }
+
+  const rawValue = Bun.argv[index + 1];
+  const value = Number(rawValue);
+
+  if (
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    console.error(
+      `${name} must be a positive integer.`,
+    );
+
+    process.exit(1);
+  }
+
+  return value;
+}
+
+function getObjective(): string {
+  const args = Bun.argv.slice(2);
+
+  const objectiveParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (
+      arg === "--max-steps" ||
+      arg === "--max-tool-calls"
+    ) {
+      i += 1;
+      continue;
+    }
+
+    objectiveParts.push(arg || "");
+  }
+
+  return objectiveParts
+    .join(" ")
+    .trim();
+}
+
+async function main(): Promise<void> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+
+  const modelName = process.env.OPENROUTER_MODEL;
+
+  if (!apiKey || !modelName) {
+    console.error("OPENROUTER_API_KEY and OPENROUTER_MODEL are required.");
+
+    process.exit(1);
+  }
+
+  const maxSteps = getNumberFlag("--max-steps", 10);
+
+  const maxToolCalls = getNumberFlag("--max-tool-calls", 6);
+
+  const registry = new ToolRegistry();
+
+  registry.register(new SearchLogsTool());
+  registry.register(new GetMetricsTool());
+  registry.register(new ListServicesTool());
+  registry.register(new GetServiceStatusTool());
+
+  const model = new ScriptedModel([
+    {
+      type: "tool_call",
+      tool: "get_metrics",
+      arguments: {
+        service: "payment-api",
+        metric: "request_latency",
+      },
+      summary:
+        "Check the request latency metric of payment-api.",
     },
-    summary: "Search logs again.",
-  },
-]);
+    {
+      type: "tool_call",
+      tool: "get_service_status",
+      arguments: {
+        service: "payment-api",
+      },
+      summary:
+        "Check the operational status of payment-api.",
+    },
 
-const runner = new AgentRunner(model, registry, {
-  limits: { maxSteps: 2, maxToolCalls: 10 },
-});
+    {
+      type: "final",
+      response: {
+        evidence: [
+          {
+            evidenceId: "E1",
+            statement:
+              "Payment API is currently degraded.",
+          },
+        ],
+
+        conclusion:
+          "The service status confirms payment-api degradation.",
+
+        recommendations: [
+          "Continue investigating the source of the degradation.",
+        ],
+      },
+    },
+  ]);
+
+  const objective = getObjective();
+
+  if (objective) {
+    await runSingle(objective, model, registry, maxSteps, maxToolCalls);
+
+    return;
+  }
+
+  await runInteractive(model, registry, maxSteps, maxToolCalls);
+}
 
 
-const result = await runner.run(
-  "Why were payment requests failing around 14:05?",
-);
+main().catch((error: unknown) => {
+  console.error(
+    "Agent run failed:",
+    error instanceof Error ? error.message : error,
+  );
 
-console.dir(result, {
-  depth: null,
+  process.exit(1);
 });

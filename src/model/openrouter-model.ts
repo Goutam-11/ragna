@@ -178,7 +178,8 @@ function buildContextMessage(context: ModelContext): string {
 function buildSystemPrompt(): string {
   return `
 You are an incident investigation model operating
-inside a controlled agent harness.
+inside a controlled agent harness currently in testing so you have a mock data.
+Act accordingly with the mock data.
 
 Your job is to investigate the user's objective using
 the available tools and collected evidence.
