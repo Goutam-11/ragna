@@ -2,7 +2,7 @@ import type { ModelAdapter, ModelContext } from "@/model/model";
 
 import type { FinalDecision } from "@/model/types";
 
-import { ToolRegistry } from "@/tools/registry";
+import { ToolRegistry, type PreparedToolCall } from "@/tools/registry";
 
 import type { ContextItem, Evidence, RunState } from "./types";
 import {
@@ -14,6 +14,8 @@ import {
 import { TraceCollector } from "../trace/collector";
 import type { TraceEvent } from "../trace/events";
 import { sanitizeForTrace } from "../trace/redact";
+import { requestApprovalWithTimeout } from "@/approval/request";
+import type { ApprovalProvider } from "@/approval/provider";
 
 export type AgentRunResult =
   | {
@@ -31,19 +33,189 @@ export type AgentRunResult =
       trace: readonly TraceEvent[];
     };
 
+export interface AgentRunnerOptions {
+  limits?: ExecutionLimits;
+  approvalProvider?: ApprovalProvider;
+  approvalTimeoutMs?: number;
+  onTraceEvent?: (
+      event: TraceEvent,
+    ) => void | Promise<void>;
+}
+
 export class AgentRunner {
+  private readonly approvalProvider?: ApprovalProvider;
+  private readonly approvalTimeoutMs: number;
+  private readonly limits: ExecutionLimits;
+  private readonly onTraceEvent?:
+    AgentRunnerOptions["onTraceEvent"];
   constructor(
     private readonly model: ModelAdapter,
     private readonly tools: ToolRegistry,
-    private readonly limits: ExecutionLimits = DEFAULT_EXECUTION_LIMITS,
+    options: AgentRunnerOptions = {},
   ) {
-    validateExecutionLimits(limits);
+    this.limits = options.limits ?? DEFAULT_EXECUTION_LIMITS;
+
+    this.approvalProvider = options.approvalProvider;
+
+    this.approvalTimeoutMs = options.approvalTimeoutMs ?? 30_000;
+
+    this.onTraceEvent = options.onTraceEvent;
+
+    validateExecutionLimits(this.limits);
+  }
+
+  private async emit(
+    trace: TraceCollector,
+    event: TraceEvent,
+  ): Promise<void> {
+    trace.record(event);
+  
+    await this.onTraceEvent?.(
+      event,
+    );
+  }
+
+  private async handleApproval(
+    call: PreparedToolCall,
+    summary: string,
+    trace: TraceCollector,
+  ): Promise<
+    | {
+        status: "approved";
+        requestId: string;
+      }
+    | {
+        status: "denied" | "timed_out";
+
+        requestId: string;
+        message: string;
+      }
+    > {
+    if(!this.approvalProvider) {
+      return { status: "denied", requestId: crypto.randomUUID(), message: "No approval provider configured."};
+    }
+    if(!this.approvalTimeoutMs) {
+      return { status: "denied", requestId: crypto.randomUUID(), message: "No approval timeout configured."};
+    }
+    
+    const requestId = crypto.randomUUID();
+
+    const request = {
+      requestId,
+
+      tool: call.toolName,
+
+      arguments: call.arguments,
+
+      summary,
+
+      timeoutMs: this.approvalTimeoutMs,
+    };
+
+    await this.emit(trace, {
+      type: "APPROVAL_REQUIRED",
+
+      requestId,
+
+      tool: call.toolName,
+
+      arguments: sanitizeForTrace(call.arguments),
+
+      summary: sanitizeForTrace(summary) as string,
+
+      timeoutMs: this.approvalTimeoutMs,
+    });
+
+    // No provider means we fail closed.
+    if (!this.approvalProvider) {
+      await this.emit(trace, {
+        type: "APPROVAL_DECISION",
+
+        requestId,
+
+        tool: call.toolName,
+
+        decision: "denied",
+
+        reason: "No approval provider configured.",
+      });
+
+      return {
+        status: "denied",
+        requestId,
+
+        message:
+          "Tool execution denied because no approval provider is configured.",
+      };
+    }
+
+    const decision = await requestApprovalWithTimeout(
+      this.approvalProvider,
+      request,
+    );
+
+    if (decision.status === "approved") {
+      await this.emit(trace, {
+        type: "APPROVAL_DECISION",
+
+        requestId,
+
+        tool: call.toolName,
+
+        decision: "approved",
+      });
+
+      return {
+        status: "approved",
+        requestId,
+      };
+    }
+
+    if (decision.status === "denied") {
+      const message = decision.reason ?? "Human approval was denied.";
+
+      await this.emit(trace, {
+        type: "APPROVAL_DECISION",
+
+        requestId,
+
+        tool: call.toolName,
+
+        decision: "denied",
+
+        reason: sanitizeForTrace(message) as string,
+      });
+
+      return {
+        status: "denied",
+        requestId,
+        message,
+      };
+    }
+
+    await this.emit(trace, {
+      type: "APPROVAL_DECISION",
+
+      requestId,
+
+      tool: call.toolName,
+
+      decision: "timed_out",
+    });
+
+    return {
+      status: "timed_out",
+
+      requestId,
+
+      message: "Human approval timed out.",
+    };
   }
 
   async run(objective: string): Promise<AgentRunResult> {
     const trace = new TraceCollector();
 
-    trace.record({
+    await this.emit(trace, {
       type: "RUN_STARTED",
       objective,
     });
@@ -62,7 +234,7 @@ export class AgentRunner {
       // IMPORTANT:
       // Check BEFORE making another model call.
       if (state.stepsUsed >= this.limits.maxSteps) {
-        trace.record({
+        await this.emit(trace, {
           type: "LIMIT_REACHED",
           reason: "MAX_STEPS_REACHED",
         });
@@ -79,18 +251,22 @@ export class AgentRunner {
       // Build the context the model is allowed to see.
       const context: ModelContext = {
         objective: state.objective,
-        context: state.context,
-        evidence: state.evidence,
-        toolErrors: state.toolErrors,
-      };
 
+        context: state.context,
+
+        evidence: state.evidence,
+
+        toolErrors: state.toolErrors,
+
+        approvals: state.approvals,
+      };
       // Ask the model what should happen next.
       const decision = await this.model.decide(
         context,
         this.tools.getModelDefinitions(),
       );
 
-      trace.record({
+      await this.emit(trace, {
         type: "MODEL_DECISION",
         summary:
           decision.type === "tool_call"
@@ -102,7 +278,7 @@ export class AgentRunner {
 
       // The model has decided that the investigation is complete.
       if (decision.type === "final") {
-        trace.record({
+        await this.emit(trace, {
           type: "FINAL_RESPONSE",
           response: sanitizeForTrace(decision.response),
         });
@@ -122,7 +298,7 @@ export class AgentRunner {
       //
       // Check the tool budget before registry.execute().
       if (state.toolCallsUsed >= this.limits.maxToolCalls) {
-        trace.record({
+        await this.emit(trace, {
           type: "LIMIT_REACHED",
           reason: "MAX_TOOL_CALLS_REACHED",
         });
@@ -136,22 +312,73 @@ export class AgentRunner {
         };
       }
 
-      trace.record({
+      const prepared = this.tools.prepare(decision.tool, decision.arguments);
+
+      if (!prepared.success) {
+        state.toolErrors.push({
+          tool: decision.tool,
+
+          code: prepared.error.code,
+
+          message: prepared.error.message,
+        });
+
+        await this.emit(trace, {
+          type: "TOOL_ERROR",
+
+          tool: decision.tool,
+
+          code: prepared.error.code,
+
+          message: prepared.error.message,
+
+          details: sanitizeForTrace(
+            getSafeErrorDetails(prepared.error.details),
+          ),
+        });
+
+        continue;
+      }
+
+      const call = prepared.call;
+
+      if (call.approval === "required") {
+        const outcome = await this.handleApproval(
+          call,
+          decision.summary,
+          trace,
+        );
+
+        if (outcome.status !== "approved") {
+          state.approvals.push({
+            requestId: outcome.requestId,
+
+            tool: call.toolName,
+
+            status: outcome.status,
+
+            message: outcome.message,
+          });
+
+          continue;
+        }
+      }
+
+      await this.emit(trace, {
         type: "TOOL_CALL",
-        tool: decision.tool,
-        arguments: sanitizeForTrace(decision.arguments),
+
+        tool: call.toolName,
+
+        arguments: sanitizeForTrace(call.arguments),
       });
 
-      const result = await this.tools.execute(
-        decision.tool,
-        decision.arguments,
-      );
+      const result = await this.tools.executePrepared(call);
 
       state.toolCallsUsed += 1;
 
       if (result.success) {
         if (result.kind === "context") {
-          const contextItem = {
+          const contextItem: ContextItem = {
             id: `C${state.context.length + 1}`,
             source: decision.tool,
             data: result.data,
@@ -159,7 +386,7 @@ export class AgentRunner {
 
           state.context.push(contextItem);
 
-          trace.record({
+          await this.emit(trace, {
             type: "TOOL_RESULT",
             tool: decision.tool,
             resultKind: "context",
@@ -175,7 +402,7 @@ export class AgentRunner {
 
           state.evidence.push(evidence);
 
-          trace.record({
+          await this.emit(trace, {
             type: "TOOL_RESULT",
             tool: decision.tool,
             resultKind: "evidence",
@@ -192,13 +419,77 @@ export class AgentRunner {
         message: result.error.message,
       });
 
-      trace.record({
+      await this.emit(trace, {
         type: "TOOL_ERROR",
         tool: decision.tool,
         code: result.error.code,
         message: result.error.message,
         details: sanitizeForTrace(getSafeErrorDetails(result.error.details)),
       });
+    }
+  }
+  
+  async runInteractive(
+    createRunner: () => AgentRunner,
+  ): Promise<void> {
+    console.log(
+      "\nObservable Agent Loop",
+    );
+  
+    console.log(
+      'Type "exit" to quit.\n',
+    );
+  
+    while (true) {
+      const input =
+        prompt("> ");
+  
+      if (input === null) {
+        break;
+      }
+  
+      const objective =
+        input.trim();
+  
+      if (!objective) {
+        continue;
+      }
+  
+      if (
+        objective === "exit" ||
+        objective === "quit"
+      ) {
+        break;
+      }
+  
+      const runner =
+        createRunner();
+  
+      try {
+        const result =
+          await runner.run(
+            objective,
+          );
+  
+        console.log(
+          `\nTermination: ${result.terminationReason}`,
+        );
+  
+        console.log(
+          `Steps: ${result.state.stepsUsed}`,
+        );
+  
+        console.log(
+          `Tool calls: ${result.state.toolCallsUsed}\n`,
+        );
+      } catch (error) {
+        console.error(
+          "\nInvestigation failed:",
+          error instanceof Error
+            ? error.message
+            : error,
+        );
+      }
     }
   }
 }

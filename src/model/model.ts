@@ -15,6 +15,16 @@ export interface ModelContext {
     data: unknown;
   }[];
 
+  approvals: {
+    tool: string;
+
+    status:
+      | "denied"
+      | "timed_out";
+
+    message: string;
+  }[];
+
   toolErrors: {
     tool: string;
     code: string;

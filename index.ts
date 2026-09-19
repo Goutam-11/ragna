@@ -41,14 +41,10 @@ const model = new ScriptedModel([
   },
 ]);
 
-const runner = new AgentRunner(
-  model,
-  registry,
-  {
-    maxSteps: 2,
-    maxToolCalls: 10,
-  }
-);
+const runner = new AgentRunner(model, registry, {
+  limits: { maxSteps: 2, maxToolCalls: 10 },
+});
+
 
 const result = await runner.run(
   "Why were payment requests failing around 14:05?",
