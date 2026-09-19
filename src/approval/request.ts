@@ -7,6 +7,12 @@ import type {
   ApprovalRequest,
 } from "./types";
 
+/**
+ * Requests approval with a bounded wait.
+ *
+ * A timeout is represented as an approval outcome rather than leaving
+ * the investigation waiting indefinitely.
+ */
 export async function requestApprovalWithTimeout(
   provider: ApprovalProvider,
   request: ApprovalRequest,

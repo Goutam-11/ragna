@@ -7,6 +7,12 @@ export function renderTrace(events: readonly TraceEvent[]): string {
     .join("\n\n");
 }
 
+/**
+ * Renders one operational trace event for CLI presentation.
+ *
+ * Sequence numbering is supplied by the caller and is intentionally
+ * not stored as part of the underlying TraceEvent.
+ */
 export function renderEvent(event: TraceEvent, sequence: number): string {
   const prefix = `[${formatSequence(sequence)}]`;
 

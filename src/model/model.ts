@@ -8,7 +8,7 @@ export interface ModelContext {
     source: string;
     data: unknown;
   }[];
-  
+
   evidence: {
     id: string;
     source: string;
@@ -18,9 +18,7 @@ export interface ModelContext {
   approvals: {
     tool: string;
 
-    status:
-      | "denied"
-      | "timed_out";
+    status: "denied" | "timed_out";
 
     message: string;
   }[];
@@ -38,6 +36,12 @@ export interface ModelToolDefinition {
   inputSchema: unknown;
 }
 
+/**
+ * Provider-independent interface for agent decisions.
+ *
+ * Implementations may use a live LLM or deterministic scripted
+ * decisions without changing the execution harness.
+ */
 export interface ModelAdapter {
   decide(
     context: ModelContext,

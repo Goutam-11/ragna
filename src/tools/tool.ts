@@ -4,6 +4,12 @@ export type ToolResultKind = "context" | "evidence";
 
 export type ApprovalPolicy = "never" | "required";
 
+/**
+ * Executable capability exposed to the agent.
+ *
+ * Inputs and outputs cross validation boundaries, while resultKind
+ * determines whether a successful result becomes context or evidence.
+ */
 export interface Tool<TInput, TOutput> {
   name: string;
   description: string;

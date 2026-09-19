@@ -1,3 +1,10 @@
+/**
+ * Core execution harness for a single investigation.
+ *
+ * The model proposes actions, while this runner owns execution:
+ * validation, limits, approval, tool invocation, state accumulation,
+ * and operational tracing.
+ */
 import type { ModelAdapter, ModelContext } from "@/model/model";
 
 import type { FinalDecision } from "@/model/types";
@@ -37,17 +44,14 @@ export interface AgentRunnerOptions {
   limits?: ExecutionLimits;
   approvalProvider?: ApprovalProvider;
   approvalTimeoutMs?: number;
-  onTraceEvent?: (
-      event: TraceEvent,
-    ) => void | Promise<void>;
+  onTraceEvent?: (event: TraceEvent) => void | Promise<void>;
 }
 
 export class AgentRunner {
   private readonly approvalProvider?: ApprovalProvider;
   private readonly approvalTimeoutMs: number;
   private readonly limits: ExecutionLimits;
-  private readonly onTraceEvent?:
-    AgentRunnerOptions["onTraceEvent"];
+  private readonly onTraceEvent?: AgentRunnerOptions["onTraceEvent"];
   constructor(
     private readonly model: ModelAdapter,
     private readonly tools: ToolRegistry,
@@ -64,15 +68,10 @@ export class AgentRunner {
     validateExecutionLimits(this.limits);
   }
 
-  private async emit(
-    trace: TraceCollector,
-    event: TraceEvent,
-  ): Promise<void> {
+  private async emit(trace: TraceCollector, event: TraceEvent): Promise<void> {
     trace.record(event);
-  
-    await this.onTraceEvent?.(
-      event,
-    );
+
+    await this.onTraceEvent?.(event);
   }
 
   private async handleApproval(
@@ -90,14 +89,22 @@ export class AgentRunner {
         requestId: string;
         message: string;
       }
-    > {
-    if(!this.approvalProvider) {
-      return { status: "denied", requestId: crypto.randomUUID(), message: "No approval provider configured."};
+  > {
+    if (!this.approvalProvider) {
+      return {
+        status: "denied",
+        requestId: crypto.randomUUID(),
+        message: "No approval provider configured.",
+      };
     }
-    if(!this.approvalTimeoutMs) {
-      return { status: "denied", requestId: crypto.randomUUID(), message: "No approval timeout configured."};
+    if (!this.approvalTimeoutMs) {
+      return {
+        status: "denied",
+        requestId: crypto.randomUUID(),
+        message: "No approval timeout configured.",
+      };
     }
-    
+
     const requestId = crypto.randomUUID();
 
     const request = {
@@ -212,6 +219,13 @@ export class AgentRunner {
     };
   }
 
+  /**
+   * Executes one bounded investigation.
+   *
+   * Each iteration gives the model the accumulated context, evidence,
+   * errors, and approval outcomes. Tool requests are validated and
+   * executed by the harness rather than by the model directly.
+   */
   async run(objective: string): Promise<AgentRunResult> {
     const trace = new TraceCollector();
 
@@ -232,7 +246,8 @@ export class AgentRunner {
 
     while (true) {
       // IMPORTANT:
-      // Check BEFORE making another model call.
+      // Check before making another model call.
+      // The limit must prevent the call, not terminate after it.
       if (state.stepsUsed >= this.limits.maxSteps) {
         await this.emit(trace, {
           type: "LIMIT_REACHED",
@@ -349,6 +364,8 @@ export class AgentRunner {
           trace,
         );
 
+        // A denied or timed-out approval does not consume the tool-call
+        // budget because the tool itself was never executed.
         if (outcome.status !== "approved") {
           state.approvals.push({
             requestId: outcome.requestId,
@@ -377,6 +394,8 @@ export class AgentRunner {
       state.toolCallsUsed += 1;
 
       if (result.success) {
+        // Discovery results guide later decisions but are kept separate
+        // from evidence that may support the final conclusion.
         if (result.kind === "context") {
           const contextItem: ContextItem = {
             id: `C${state.context.length + 1}`,
@@ -413,6 +432,8 @@ export class AgentRunner {
         continue;
       }
 
+      // Keep the controlled error visible to the model while excluding
+      // raw exception text from the operational trace.
       state.toolErrors.push({
         tool: decision.tool,
         code: result.error.code,
@@ -428,66 +449,43 @@ export class AgentRunner {
       });
     }
   }
-  
-  async runInteractive(
-    createRunner: () => AgentRunner,
-  ): Promise<void> {
-    console.log(
-      "\nObservable Agent Loop",
-    );
-  
-    console.log(
-      'Type "exit" to quit.\n',
-    );
-  
+
+  async runInteractive(createRunner: () => AgentRunner): Promise<void> {
+    console.log("\nObservable Agent Loop");
+
+    console.log('Type "exit" to quit.\n');
+
     while (true) {
-      const input =
-        prompt("> ");
-  
+      const input = prompt("> ");
+
       if (input === null) {
         break;
       }
-  
-      const objective =
-        input.trim();
-  
+
+      const objective = input.trim();
+
       if (!objective) {
         continue;
       }
-  
-      if (
-        objective === "exit" ||
-        objective === "quit"
-      ) {
+
+      if (objective === "exit" || objective === "quit") {
         break;
       }
-  
-      const runner =
-        createRunner();
-  
+
+      const runner = createRunner();
+
       try {
-        const result =
-          await runner.run(
-            objective,
-          );
-  
-        console.log(
-          `\nTermination: ${result.terminationReason}`,
-        );
-  
-        console.log(
-          `Steps: ${result.state.stepsUsed}`,
-        );
-  
-        console.log(
-          `Tool calls: ${result.state.toolCallsUsed}\n`,
-        );
+        const result = await runner.run(objective);
+
+        console.log(`\nTermination: ${result.terminationReason}`);
+
+        console.log(`Steps: ${result.state.stepsUsed}`);
+
+        console.log(`Tool calls: ${result.state.toolCallsUsed}\n`);
       } catch (error) {
         console.error(
           "\nInvestigation failed:",
-          error instanceof Error
-            ? error.message
-            : error,
+          error instanceof Error ? error.message : error,
         );
       }
     }

@@ -1,17 +1,18 @@
+/**
+ * Live ModelAdapter backed by OpenRouter.
+ *
+ * Converts investigation state and registered tool definitions into
+ * model requests, then normalizes the response into ModelDecision.
+ *
+ * Tool-specific validation remains the responsibility of ToolRegistry.
+ */
 import { z } from "zod";
 
-import type {
-  ModelAdapter,
-  ModelContext,
-  ModelToolDefinition,
-} from "./model";
+import type { ModelAdapter, ModelContext, ModelToolDefinition } from "./model";
 
-import type {
-  ModelDecision,
-} from "./types";
+import type { ModelDecision } from "./types";
 
-const OPENROUTER_URL =
-  "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const FinalResponseSchema = z
   .object({
@@ -24,9 +25,7 @@ const FinalResponseSchema = z
 
     conclusion: z.string(),
 
-    recommendations: z.array(
-      z.string(),
-    ),
+    recommendations: z.array(z.string()),
   })
   .strict();
 
@@ -35,19 +34,14 @@ const OpenRouterResponseSchema = z.object({
     .array(
       z.object({
         message: z.object({
-          content: z
-            .string()
-            .nullable()
-            .optional(),
+          content: z.string().nullable().optional(),
 
           tool_calls: z
             .array(
               z.object({
                 id: z.string(),
 
-                type: z.literal(
-                  "function",
-                ),
+                type: z.literal("function"),
 
                 function: z.object({
                   name: z.string(),
@@ -67,158 +61,114 @@ export interface OpenRouterModelOptions {
   model: string;
 }
 
-export class OpenRouterModel
-  implements ModelAdapter
-{
-  constructor(
-    private readonly options:
-      OpenRouterModelOptions,
-  ) {}
+export class OpenRouterModel implements ModelAdapter {
+  constructor(private readonly options: OpenRouterModelOptions) {}
 
   async decide(
     context: ModelContext,
     tools: ModelToolDefinition[],
   ): Promise<ModelDecision> {
-    const response = await fetch(
-      OPENROUTER_URL,
-      {
-        method: "POST",
+    const response = await fetch(OPENROUTER_URL, {
+      method: "POST",
 
-        headers: {
-          Authorization:
-            `Bearer ${this.options.apiKey}`,
+      headers: {
+        Authorization: `Bearer ${this.options.apiKey}`,
 
-          "Content-Type":
-            "application/json",
-        },
-
-        body: JSON.stringify({
-          model: this.options.model,
-
-          messages: [
-            {
-              role: "system",
-              content: buildSystemPrompt(),
-            },
-
-            {
-              role: "user",
-              content:
-                buildContextMessage(
-                  context,
-                ),
-            },
-          ],
-
-          tools: tools.map((tool) => ({
-            type: "function",
-
-            function: {
-              name: tool.name,
-
-              description:
-                tool.description,
-
-              parameters:
-                tool.inputSchema,
-            },
-          })),
-
-          tool_choice: "auto",
-
-          // Our harness executes one tool
-          // decision per loop iteration.
-          parallel_tool_calls: false,
-        }),
+        "Content-Type": "application/json",
       },
-    );
+
+      body: JSON.stringify({
+        model: this.options.model,
+
+        messages: [
+          {
+            role: "system",
+            content: buildSystemPrompt(),
+          },
+
+          {
+            role: "user",
+            content: buildContextMessage(context),
+          },
+        ],
+
+        tools: tools.map((tool) => ({
+          type: "function",
+
+          function: {
+            name: tool.name,
+
+            description: tool.description,
+
+            parameters: tool.inputSchema,
+          },
+        })),
+
+        tool_choice: "auto",
+
+        // Our harness executes one tool
+        // decision per loop iteration.
+        parallel_tool_calls: false,
+      }),
+    });
 
     if (!response.ok) {
-      const body =
-        await response.text();
+      const body = await response.text();
 
       throw new Error(
         `OpenRouter request failed (${response.status}): ${body}`,
       );
     }
 
-    const rawResponse: unknown =
-      await response.json();
+    const rawResponse: unknown = await response.json();
 
-    const parsed =
-      OpenRouterResponseSchema.safeParse(
-        rawResponse,
-      );
+    const parsed = OpenRouterResponseSchema.safeParse(rawResponse);
 
     if (!parsed.success) {
-      throw new Error(
-        "OpenRouter returned an invalid response shape",
-      );
+      throw new Error("OpenRouter returned an invalid response shape");
     }
 
-    const message =
-      parsed.data.choices[0]?.message;
+    const message = parsed.data.choices[0]?.message;
 
-    const toolCall =
-      message?.tool_calls?.[0];
+    const toolCall = message?.tool_calls?.[0];
 
     if (toolCall) {
-      return parseToolCall(
-        toolCall.function.name,
-        toolCall.function.arguments,
-      );
+      return parseToolCall(toolCall.function.name, toolCall.function.arguments);
     }
 
-    return parseFinalResponse(
-      message?.content,
-      context,
-    );
+    return parseFinalResponse(message?.content, context);
   }
 }
 
-function parseToolCall(
-  tool: string,
-  rawArguments: string,
-): ModelDecision {
+function parseToolCall(tool: string, rawArguments: string): ModelDecision {
   let argumentsValue: unknown;
 
   try {
-    argumentsValue =
-      JSON.parse(rawArguments);
+    argumentsValue = JSON.parse(rawArguments);
   } catch {
-    throw new Error(
-      `Model returned invalid JSON arguments for tool: ${tool}`,
-    );
+    throw new Error(`Model returned invalid JSON arguments for tool: ${tool}`);
   }
 
   return {
     type: "tool_call",
     tool,
     arguments: argumentsValue,
-    summary:
-      `Model requested ${tool}.`,
+    summary: `Model requested ${tool}.`,
   };
 }
 
-function buildContextMessage(
-  context: ModelContext,
-): string {
+function buildContextMessage(context: ModelContext): string {
   return JSON.stringify(
     {
-      objective:
-        context.objective,
+      objective: context.objective,
 
-      collectedContext:
-        context.context,
+      collectedContext: context.context,
 
-      collectedEvidence:
-        context.evidence,
+      collectedEvidence: context.evidence,
 
-      toolErrors:
-        context.toolErrors,
+      toolErrors: context.toolErrors,
 
-      approvals:
-        context.approvals,
+      approvals: context.approvals,
     },
     null,
     2,
@@ -284,48 +234,29 @@ function parseFinalResponse(
   context: ModelContext,
 ): ModelDecision {
   if (!content) {
-    throw new Error(
-      "Model returned neither a tool call nor a final response",
-    );
+    throw new Error("Model returned neither a tool call nor a final response");
   }
 
   let raw: unknown;
 
   try {
-    raw = JSON.parse(
-      stripCodeFence(content),
-    );
+    raw = JSON.parse(stripCodeFence(content));
   } catch {
-    throw new Error(
-      "Model final response was not valid JSON",
-    );
+    throw new Error("Model final response was not valid JSON");
   }
 
-  const parsed =
-    FinalResponseSchema.safeParse(raw);
+  const parsed = FinalResponseSchema.safeParse(raw);
 
   if (!parsed.success) {
-    throw new Error(
-      "Model final response failed validation",
-    );
+    throw new Error("Model final response failed validation");
   }
 
-  const validEvidenceIds =
-    new Set(
-      context.evidence.map(
-        (evidence) => evidence.id,
-      ),
-    );
+  const validEvidenceIds = new Set(
+    context.evidence.map((evidence) => evidence.id),
+  );
 
-  for (
-    const evidence
-    of parsed.data.evidence
-  ) {
-    if (
-      !validEvidenceIds.has(
-        evidence.evidenceId,
-      )
-    ) {
+  for (const evidence of parsed.data.evidence) {
+    if (!validEvidenceIds.has(evidence.evidenceId)) {
       throw new Error(
         `Model referenced unknown evidence: ${evidence.evidenceId}`,
       );
@@ -338,24 +269,11 @@ function parseFinalResponse(
   };
 }
 
-function stripCodeFence(
-  value: string,
-): string {
+function stripCodeFence(value: string): string {
   const trimmed = value.trim();
 
-  if (
-    trimmed.startsWith("```") &&
-    trimmed.endsWith("```")
-  ) {
-    return trimmed
-      .replace(
-        /^```(?:json)?\s*/,
-        "",
-      )
-      .replace(
-        /\s*```$/,
-        "",
-      );
+  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
+    return trimmed.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   }
 
   return trimmed;
